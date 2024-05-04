@@ -1,32 +1,46 @@
-import ytdl from "ytdl-core";
+import ytdl from 'ytdl-core';
+import { spawn } from 'child_process';
+import stream from 'stream';
 
-export const processController = async (req, res) => {
+export const processYoutubeUrl = async (req, res) => {
   try {
     const url = req.query.url;
     if (!ytdl.validateURL(url)) {
       return res.status(400).send('Invalid URL');
     }
 
-    try {
-      const info = await ytdl.getBasicInfo(url);
-      const title = info.videoDetails.title.replace(/[^\x00-\x7F]/g, "");
-      const safeTitle = title.replace(/[^a-zA-Z0-9-_ ]/g, "_");
+    const info = await ytdl.getBasicInfo(url);
+    const title = info.videoDetails.title.replace(/[^\x00-\x7F]/g, "");
+    const safeTitle = title.replace(/[^a-zA-Z0-9-_ ]/g, "_");
 
-      res.header('Content-Disposition', `attachment; filename="${safeTitle}.mp3"`);
-      const audioStream = ytdl(url, { format: 'mp3', filter: 'audioonly' });
-      audioStream.pipe(res);
+    res.header('Content-Disposition', `attachment; filename="${safeTitle}.mp3"`);
+    res.header('Content-Type', 'audio/mpeg');
 
-      audioStream.on('error', error => {
-        console.error('Streaming error:', error);
-        res.status(500).send('Failed to stream the audio');
-      });
+    const audioStream = ytdl(url, { filter: 'audioonly' });
 
-    } catch (error) {
-      console.error('Error fetching video info:', error);
-      res.status(500).send('Error processing video information');
+    const ffmpegProcess = spawn('ffmpeg', [
+      '-i', 'pipe:0',             
+      '-codec:a', 'libmp3lame',   
+      '-b:a', '192k',             
+      '-f', 'mp3',                
+      'pipe:1'  
+    ]);
+
+    audioStream.pipe(ffmpegProcess.stdin);
+    if (ffmpegProcess.stdout instanceof stream.Readable) {
+      ffmpegProcess.stdout.pipe(res);
     }
-  } catch (err) {
-    console.error('Server error:', err);
-    res.status(500).send('Server error'); 
+
+    ffmpegProcess.on('close', () => {
+      console.log('Conversion and download finished.');
+    });
+
+    ffmpegProcess.stderr.on('data', (data) => {
+      console.error(`ffmpeg stderr: ${data}`);
+    });
+
+  } catch (error) {
+    console.error('Error:', error);
+    res.status(500).send('Server error');
   }
-}
+};
