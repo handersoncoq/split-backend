@@ -2,7 +2,7 @@ import ytdl from 'ytdl-core';
 import { spawn } from 'child_process';
 import stream from 'stream';
 
-export const processYoutubeUrl = async (req, res) => {
+export const downloadYoutubeAudio = async (req, res) => {
   try {
     const url = req.query.url;
     if (!ytdl.validateURL(url)) {

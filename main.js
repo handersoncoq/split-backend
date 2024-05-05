@@ -1,9 +1,9 @@
 import express from 'express';
 import cors from 'cors';
-import { processYoutubeUrl } from './controllers/ProcessController.js';
-import ytdl from "ytdl-core";
 import path from 'path';  // Make sure to import 'path'
 import { fileURLToPath } from 'url';
+import { downloadYoutubeAudio } from './controllers/ProcessController.js';
+import { processYoutubeUrl } from './services/ProcessService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,6 +24,7 @@ const PORT = process.env.PORT || 4000;
 app.use('/public', express.static(path.join(__dirname, 'public')));
 
 // Routes
+app.get('/download', downloadYoutubeAudio);
 app.get('/process', processYoutubeUrl);
 
 

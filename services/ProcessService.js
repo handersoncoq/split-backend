@@ -1,87 +1,93 @@
-import ytdl from "ytdl-core";
-import { exec } from "child_process";
-import fs from "fs";
-import path from "path";
-import config from "../config.js";
+import ytdl from 'ytdl-core';
+import { spawn } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 
-const getFullUrl = (req) => `${req.protocol}://${req.get("host")}`;
+export const processYoutubeUrl = async (req, res) => {
+  const url = req.query.url;
+  try {
+    const info = await validateUrlAndGetInfo(url);
+    const safeTitle = sanitizeTitle(info.videoDetails.title);
+    const { outputPath, instrumentalPath } = getFilePaths(safeTitle);
 
-export const downloadYouTubeAudio = async (url) => {
+    await convertToMp3(url, outputPath);
+    await processWithSpleeter(outputPath, instrumentalPath, res);
+    cleanupFiles(outputPath, instrumentalPath);
+  } catch (error) {
+    console.error('Error:', error.message);
+    res.status(error.status || 500).send(error.message);
+  }
+};
+
+const validateUrlAndGetInfo = async (url) => {
+  if (!ytdl.validateURL(url)) {
+    throw { status: 400, message: 'Invalid URL' };
+  }
+  return ytdl.getBasicInfo(url);
+};
+
+const sanitizeTitle = (title) => {
+  title = title.replace(/[^\x00-\x7F]/g, "");
+  return title.replace(/[^a-zA-Z0-9-_ ]/g, "_");
+};
+
+const getFilePaths = (safeTitle) => {
+  const tempDir = os.tmpdir();
+  const outputPath = path.join(tempDir, `${safeTitle}.mp3`);
+  const instrumentalPath = path.join(tempDir, `${safeTitle}_instrumental.mp3`);
+  return { outputPath, instrumentalPath };
+};
+
+const convertToMp3 = (url, outputPath) => {
   return new Promise((resolve, reject) => {
-      const audioPath = path.resolve(config.basePath, "downloads", "audio.mp3");
-      const outputPath = path.resolve(audioPath, "downloads", "audio.mp3");
-      const directory = path.dirname(outputPath);
+    const audioStream = ytdl(url, { filter: 'audioonly' });
+    const ffmpegProcess = spawn('ffmpeg', ['-i', 'pipe:0', '-codec:a', 'libmp3lame', '-b:a', '192k', '-f', 'mp3', outputPath]);
 
-      
-      if (!fs.existsSync(directory)) {
-          fs.mkdirSync(directory, { recursive: true });
+    audioStream.pipe(ffmpegProcess.stdin);
+
+    ffmpegProcess.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error('FFMPEG conversion failed'));
+      } else {
+        resolve();
       }
+    });
 
-      const stream = ytdl(url, { quality: 'highestaudio', filter: 'audioonly' });
-      const outputStream = fs.createWriteStream(outputPath);
-
-      stream.pipe(outputStream);
-      stream.on('error', error => {
-          console.error("Error in downloading stream:", error);
-          reject(error);
-      });
-      outputStream.on('finish', () => {
-          console.log("Download and save complete:", outputPath);
-          resolve(outputPath);
-      });
-      outputStream.on('error', error => {
-          console.error("Error in saving file:", error);
-          reject(error);
-      });
+    ffmpegProcess.on('error', reject);
   });
 };
 
-
-// Run spleeter using Docker
-const runSpleeter = async (inputPath, outputPath) => {
-  return new Promise((resolve, reject) => {
-      const command = `docker run -v ${path.dirname(inputPath)}:/input -v ${path.dirname(outputPath)}:/output researchdeezer/spleeter separate -i /input/${path.basename(inputPath)} -o /output -p spleeter:2stems`;
-
-      exec(command, (error, stdout, stderr) => {
-          if (error) {
-              console.error(`exec error: ${error}`);
-              reject(error);
-              return;
-          }
-          console.log(`stdout: ${stdout}`);
-          console.error(`stderr: ${stderr}`);
-          resolve();
+const processWithSpleeter = (outputPath, instrumentalPath, res) => {
+    return new Promise((resolve, reject) => {
+      const spleeterProcess = spawn('python3', ['-m', 'spleeter', 'separate', '-i', outputPath, '-p', 'spleeter:2stems', '-o', path.dirname(outputPath)]);
+  
+      spleeterProcess.stderr.on('data', (data) => {
+        console.error(`Spleeter stderr: ${data.toString()}`);
       });
-  });
-};
-
-
-
-export const processService = async (url, req) => {
-    console.log(`Processing the URL: ${url}`);
-    try {
-        const audioPath = path.resolve(config.basePath, "downloads", "audio.mp3");
-        const outputDir = path.resolve(config.basePath, "public", "output");
-
-        if (!fs.existsSync(path.dirname(audioPath))) {
-            fs.mkdirSync(path.dirname(audioPath), { recursive: true });
+  
+      spleeterProcess.on('close', (code) => {
+        if (code !== 0) {
+          reject(new Error(`Spleeter exited with code ${code}`));
+        } else {
+          res.sendFile(instrumentalPath, (err) => {
+            if (err) {
+              reject(new Error('Error sending file'));
+            } else {
+              resolve();
+            }
+          });
         }
+      });
+  
+      spleeterProcess.on('error', (err) => {
+        reject(new Error(`Spleeter process error: ${err}`));
+      });
+    });
+  };
+  
 
-        // console.log("Download started");
-        // await downloadYouTubeAudio(url, audioPath);
-        // console.log("Download finished");
-
-        // Processing with Spleeter
-        console.log("Processing started");
-        await runSpleeter(audioPath, outputDir);
-        console.log("Processing finished");
-
-        const baseUrl = getFullUrl(req);
-        return `${baseUrl}/public/output/instrumental.mp3`;
-    } catch (error) {
-        console.error("Failed to process URL:", error);
-        throw error;
-    }
+const cleanupFiles = (outputPath, instrumentalPath) => {
+  fs.unlink(outputPath, (err) => { if (err) console.error('Error deleting original audio:', err); });
+  fs.unlink(instrumentalPath, (err) => { if (err) console.error('Error deleting instrumental:', err); });
 };
-
-
