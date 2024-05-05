@@ -19,24 +19,51 @@ export const processYoutubeUrl = async (req, res) => {
     const audioStream = ytdl(url, { filter: 'audioonly' });
 
     const ffmpegProcess = spawn('ffmpeg', [
-      '-i', 'pipe:0',             
-      '-codec:a', 'libmp3lame',   
-      '-b:a', '192k',             
-      '-f', 'mp3',                
-      'pipe:1'  
+      '-i', 'pipe:0',
+      '-codec:a', 'libmp3lame',
+      '-b:a', '192k',
+      '-f', 'mp3',
+      'pipe:1'
     ]);
 
-    audioStream.pipe(ffmpegProcess.stdin);
+    audioStream.on('error', error => {
+      console.error('ytdl-core stream error:', error);
+      ffmpegProcess.kill();
+      res.status(500).send('Stream error');
+    });
+
     if (ffmpegProcess.stdout instanceof stream.Readable) {
       ffmpegProcess.stdout.pipe(res);
+      ffmpegProcess.stdout.on('error', error => {
+        console.error('FFMPEG stdout stream error:', error);
+        res.status(500).send('Conversion error');
+      });
     }
 
-    ffmpegProcess.on('close', () => {
-      console.log('Conversion and download finished.');
+    ffmpegProcess.on('error', error => {
+      console.error('FFMPEG process error:', error);
+      res.status(500).send('FFMPEG error');
+    });
+
+    ffmpegProcess.on('close', (code) => {
+      if (code !== 0) {
+        console.log(`FFMPEG exited with code ${code}`);
+      } else {
+        console.log('Conversion and download finished.');
+      }
     });
 
     ffmpegProcess.stderr.on('data', (data) => {
-      console.error(`ffmpeg stderr: ${data}`);
+      console.error(`FFMPEG stderr: ${data}`);
+    });
+
+    audioStream.pipe(ffmpegProcess.stdin);
+
+    req.on('close', () => {
+      if (!res.finished) {
+        ffmpegProcess.kill();
+        audioStream.unpipe(ffmpegProcess.stdin);
+      }
     });
 
   } catch (error) {
